@@ -1,0 +1,13 @@
+{
+  "traffic": {
+    "requests_per_minute": 30,
+    "redis_ping_interval_seconds": 36
+  },
+  "baseline_cpu_percent": {"app": 1.5, "redis": 1.5},
+  "cpu_load": [
+    {"host": "redis", "start_minute": 35, "end_minute": 55,  "cpu_percent": 30, "ramp_seconds": 30}
+  ],
+  "redis_latency_ms_by_cpu": [
+    [0, 0.8], [5, 1.2], [10, 8], [15, 16], [25, 90], [35, 115], [55, 160], [80, 260], [100, 400]
+  ]
+}
