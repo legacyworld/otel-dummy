@@ -2,8 +2,8 @@
 """generate.py variant that authenticates with ELASTICSEARCH_URL / ELASTICSEARCH_AUTH_BASE64.
 
 Same generator and CLI options as generate.py (--duration, --load, --dry-run, ...);
-only the connection settings differ. Values are loaded by sourcing /home/kubernetes-vm/env
-(set -a; . /home/kubernetes-vm/env; set +a).
+only the connection settings differ. Values are fetched from http://kubernetes-vm:9000/env
+and exported via set -a / eval / set +a.
 
   ELASTICSEARCH_URL          https://<host>:443
   ELASTICSEARCH_AUTH_BASE64  base64 credential (base64 of "user:password" by default)
@@ -21,27 +21,30 @@ import urllib.request
 import generate
 
 
-ENV_FILE = "/home/kubernetes-vm/env"
+ENV_URL = "http://kubernetes-vm:9000/env"
 
-# Equivalent of:  set -a; . /home/kubernetes-vm/env; set +a
-_SOURCE_CMD = 'set -a; . "$1"; set +a; env -0'
+# Fetch KEY=VALUE lines from ENV_URL and export them (set -a / eval / set +a)
+_SOURCE_CMD = """
+env_content=$(curl -s "$1" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=')
+set -a
+eval "${env_content}"
+set +a
+env -0
+"""
 
 
 @functools.lru_cache(maxsize=None)
 def load_env():
     env = {}
-    if os.path.exists(ENV_FILE):
-        r = subprocess.run(["bash", "-c", _SOURCE_CMD, "bash", ENV_FILE],
-                           capture_output=True, check=False)
-        if r.returncode != 0:
-            raise SystemExit("failed to source %s: %s" % (ENV_FILE, r.stderr.decode().strip()))
-        for item in r.stdout.split(b"\0"):
-            k, sep, v = item.decode().partition("=")
-            if sep and k.startswith("ELASTICSEARCH_"):
-                env[k] = v
+    r = subprocess.run(["bash", "-c", _SOURCE_CMD, "bash", ENV_URL],
+                       capture_output=True, check=False)
+    for item in r.stdout.split(b"\0"):
+        k, sep, v = item.decode().partition("=")
+        if sep and k.startswith("ELASTICSEARCH_"):
+            env[k] = v
     for k in ("ELASTICSEARCH_URL", "ELASTICSEARCH_AUTH_BASE64"):
         if not env.get(k):
-            raise SystemExit("%s is not set (%s)" % (k, ENV_FILE))
+            raise SystemExit("%s is not set (could not load from %s)" % (k, ENV_URL))
     # generate.main() reads its connection settings under these internal names;
     # ELASTIC_* variables from the user's environment are never consulted here
     env["ELASTIC_URL"] = env["ELASTICSEARCH_URL"]
