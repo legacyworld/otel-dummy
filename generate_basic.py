@@ -2,15 +2,18 @@
 """generate.py variant that authenticates with ELASTICSEARCH_URL / ELASTICSEARCH_AUTH_BASE64.
 
 Same generator and CLI options as generate.py (--duration, --load, --dry-run, ...);
-only the connection settings differ. Values are read from the environment or .env.
+only the connection settings differ. Values are loaded by sourcing /home/kubernetes-vm/env
+(set -a; . /home/kubernetes-vm/env; set +a).
 
   ELASTICSEARCH_URL          https://<host>:443
   ELASTICSEARCH_AUTH_BASE64  base64 credential (base64 of "user:password" by default)
   ELASTICSEARCH_AUTH_SCHEME  optional, "Basic" (default) or "ApiKey" for an encoded API key
 """
+import functools
 import gzip
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -18,19 +21,27 @@ import urllib.request
 import generate
 
 
+ENV_FILE = "/home/kubernetes-vm/env"
+
+# Equivalent of:  set -a; . /home/kubernetes-vm/env; set +a
+_SOURCE_CMD = 'set -a; . "$1"; set +a; env -0'
+
+
+@functools.lru_cache(maxsize=None)
 def load_env():
     env = {}
-    p = os.path.join(generate.HERE, ".env")
-    if os.path.exists(p):
-        for line in open(p):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    env.update({k: v for k, v in os.environ.items() if k.startswith("ELASTICSEARCH_")})
+    if os.path.exists(ENV_FILE):
+        r = subprocess.run(["bash", "-c", _SOURCE_CMD, "bash", ENV_FILE],
+                           capture_output=True, check=False)
+        if r.returncode != 0:
+            raise SystemExit("failed to source %s: %s" % (ENV_FILE, r.stderr.decode().strip()))
+        for item in r.stdout.split(b"\0"):
+            k, sep, v = item.decode().partition("=")
+            if sep and k.startswith("ELASTICSEARCH_"):
+                env[k] = v
     for k in ("ELASTICSEARCH_URL", "ELASTICSEARCH_AUTH_BASE64"):
         if not env.get(k):
-            raise SystemExit("%s is not set (.env or environment)" % k)
+            raise SystemExit("%s is not set (%s)" % (k, ENV_FILE))
     # generate.main() reads its connection settings under these internal names;
     # ELASTIC_* variables from the user's environment are never consulted here
     env["ELASTIC_URL"] = env["ELASTICSEARCH_URL"]
@@ -40,7 +51,7 @@ def load_env():
 
 class ES(generate.ES):
     def req(self, method, path, body=None, raw=None, gz=False, retries=4):
-        scheme = os.environ.get("ELASTICSEARCH_AUTH_SCHEME") or load_env().get("ELASTICSEARCH_AUTH_SCHEME") or "Basic"
+        scheme = load_env().get("ELASTICSEARCH_AUTH_SCHEME") or "Basic"
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
         headers = {"Authorization": "%s %s" % (scheme, self.key),
                    "Content-Type": "application/x-ndjson" if raw is not None else "application/json"}
