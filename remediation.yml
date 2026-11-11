@@ -1,0 +1,63 @@
+name: remediation-with-approval
+enabled: true
+
+triggers:
+  - type: manual
+
+steps:
+  # 1. Register this execution on server.py so the "Approvals" page can show it
+  - name: register_approval
+    type: http
+    with:
+      url: "http://host-1:3000/approval_requests"
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        execution_id: "{{ execution.id }}"
+        service_name: "test-card-service"
+        request_id: "APR0001001"
+        description: "Remediate high CPU utilization"
+        action: "python3 cpu_load.py stop"
+
+  # 2. Wait until server.py resumes this execution with the /approval result
+  - name: approval
+    type: waitForInput
+    timeout: 24h
+    with:
+      message: |
+        ## Remediation Approval Required
+
+        A CPU load simulation is about to be started.
+
+        **Target service:** test-card-service
+
+        **Command:**
+        `python3 cpu_load.py start redis 80`
+
+        Open "Approvals" at http://host-1:3000/approval to approve or reject.
+
+        (The result of /approval resumes this workflow automatically.)
+      schema:
+        type: object
+        properties:
+          approved:
+            type: boolean
+            title: Approve remediation
+          comments:
+            type: string
+            title: Comments
+        required:
+          - approved
+
+  # 3. Execute only when approved
+  - name: execute_remediation
+    type: http
+    if: "steps.approval.output.response.approved : true"
+    with:
+      url: "http://host-1:3000/remediate_service"
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        service_name: "test-card-service"
