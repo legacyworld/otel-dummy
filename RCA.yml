@@ -1,0 +1,116 @@
+name: Alert Infra Check and Root Cause Investigation
+
+triggers:
+  - type: alert
+
+steps:
+  - name: investigate_root_cause
+    type: ai.agent
+    with:
+      message: |
+        以下のアラート情報とインフラチェックの結果をもとに、根本原因分析（root cause analysis）を行ってください。
+        関連するインフラがどれなのかも調べてそれらのメトリクスなども合わせてチェックすること
+
+        === アラート情報 ===
+        - ルール名: {{ event.rule.name }}
+        - スペースID: {{ event.spaceId }}
+
+        アラート詳細:
+        {%- for alert in event.alerts -%}
+        {{ forloop.index }}. ID: {{ alert._id }}
+           Index: {{ alert._index }}
+           Timestamp: {{ alert['@timestamp'] }}
+           Kibana Alert: {{ alert.kibana.alert | json }}
+        {%- endfor -%}
+
+        上記を踏まえて、このアラートの根本原因を調査し、考えられる原因と推奨される対応策を提示してください。
+  # 過去事例インデックスから同一事象の対応実績を検索する
+  # - RCA結果をsemantic検索のクエリにする
+  # - 自動修復手段がある事例(remediation_available=true)かつスコア0.85以上のみ対象
+  - name: search_past_incidents
+    type: elasticsearch.search
+    with:
+      index: "past-incidents"
+      size: 1
+      min_score: 0.85
+      _source:
+        - incident_id
+        - title
+        - service_name
+        - remediation_workflow
+        - remediation_action
+        - remediation_command
+        - remediation_description
+      query:
+        bool:
+          must:
+            - semantic:
+                field: semantic_summary
+                query: "{{ steps.investigate_root_cause.output.message }}"
+          filter:
+            - term:
+                remediation_available: "true"
+
+  # 該当する過去事例がない場合は何もしない
+  - name: no_past_incident
+    type: console
+    if: "steps.search_past_incidents.output.hits.total.value : 0"
+    with:
+      message: "過去に同一事象の自動修復可能な対応実績は見つかりませんでした。手動で対応してください。"
+
+  # ここから remediation.yml (remediation-with-approval) と同じ処理
+  # 1. server.py の承認システム(Approvals) に承認依頼を登録
+  - name: register_approval
+    type: http
+    if: "steps.search_past_incidents.output.hits.total.value > 0"
+    with:
+      url: "http://host-1:3000/approval_requests"
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        execution_id: "{{ execution.id }}"
+        service_name: "{{ steps.search_past_incidents.output.hits.hits[0]._source.service_name }}"
+        description: "過去事例 {{ steps.search_past_incidents.output.hits.hits[0]._source.incident_id }} と同一事象のため修復を実行: {{ steps.search_past_incidents.output.hits.hits[0]._source.title }}"
+        action: "{{ steps.search_past_incidents.output.hits.hits[0]._source.remediation_command }}"
+
+  # 2. server.py から /approval の結果で再開されるまで待機
+  - name: approval
+    type: waitForInput
+    if: "steps.search_past_incidents.output.hits.total.value > 0"
+    timeout: 24h
+    with:
+      message: |
+        ## Remediation Approval Required
+
+        過去事例 {{ steps.search_past_incidents.output.hits.hits[0]._source.incident_id }} と同一の事象を検知しました。
+
+        **Target service:** {{ steps.search_past_incidents.output.hits.hits[0]._source.service_name }}
+
+        **Command:**
+        `{{ steps.search_past_incidents.output.hits.hits[0]._source.remediation_command }}`
+
+        Open "Approvals" at http://host-1:3000/approval to approve or reject.
+      schema:
+        type: object
+        properties:
+          approved:
+            type: boolean
+            title: Approve remediation
+          comments:
+            type: string
+            title: Comments
+        required:
+          - approved
+
+  # 3. 承認された場合のみ実行
+  - name: execute_remediation
+    type: http
+    if: "steps.approval.output.response.approved : true"
+    with:
+      url: "http://host-1:3000/remediate_service"
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        service_name: "{{ steps.search_past_incidents.output.hits.hits[0]._source.service_name }}"

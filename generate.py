@@ -514,7 +514,7 @@ def gen_app_startup_logs(sink, start):
 
 
 class SystemLogs:
-    """syslog / auth noise per host plus stress-ng markers for CPU load phases; incremental."""
+    """syslog / auth noise per host plus backup-job markers for CPU load phases; incremental."""
 
     def __init__(self, sink, load, rng, start):
         self.sink, self.load, self.rng = sink, load, rng
@@ -537,7 +537,7 @@ class SystemLogs:
                     h, s["auth"], "system.auth", "/var/log/auth.log", tmpl.format(n=s["n"]), pname, offset=s["off"],
                     syslog={"appname": pname, "hostname": h["name"], "procid": str(rng.randint(900, 9000))}))
                 s["auth"] += rng.expovariate(1 / 420.0)
-        # stress-ng markers for load phases
+        # backup-job (cron tar|gzip) markers for load phases
         for p in self.load.all_phases():
             m = self.marks.setdefault(p.get("id", id(p)), {"pid": rng.randint(20000, 30000), "start": False, "end": False})
             h = HOSTS[p["host"]]
@@ -545,12 +545,11 @@ class SystemLogs:
             pid = m["pid"]
             if s < until and not m["start"]:
                 m["start"] = True
-                run = int(e - s) if e != math.inf else 86400
-                sink.add("logs-system.syslog-default", filebeat_doc(h, s, "system.syslog", "/var/log/syslog", "stress-ng: info:  [%d] setting to a %d second run per stressor" % (pid, run), "bash"))
-                sink.add("logs-system.syslog-default", filebeat_doc(h, s + 0.1, "system.syslog", "/var/log/syslog", "stress-ng: info:  [%d] dispatching hogs: %d cpu" % (pid, CORES), "bash"))
+                sink.add("logs-system.syslog-default", filebeat_doc(h, s, "system.syslog", "/var/log/syslog", "(root) CMD (/opt/backup/nightly_backup.sh)", "CRON"))
+                sink.add("logs-system.syslog-default", filebeat_doc(h, s + 0.1, "system.syslog", "/var/log/syslog", "[%d] starting full backup: tar -cf - /var/lib/redis /var/log | gzip -9 > /backup/full-%s.tar.gz" % (pid, time.strftime("%Y%m%d", time.gmtime(s))), "nightly_backup.sh"))
             if e < until and not m["end"]:
                 m["end"] = True
-                sink.add("logs-system.syslog-default", filebeat_doc(h, e, "system.syslog", "/var/log/syslog", "stress-ng: info:  [%d] successful run completed in %.2fs" % (pid, e - s), "bash"))
+                sink.add("logs-system.syslog-default", filebeat_doc(h, e, "system.syslog", "/var/log/syslog", "[%d] backup completed in %.2fs" % (pid, e - s), "nightly_backup.sh"))
 
 
 # --------------------------------------------------------------- hostmetrics
@@ -681,9 +680,9 @@ class HostSim:
         rng = self.rng
         roster = [(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]) for p in self.procs]
         if active:
-            roster.append(("stress-ng", self.stress_pids[0], 1, "stress-ng --cpu %d --timeout 600s" % CORES, "/usr/bin/stress-ng", "root", 0.0, 12e6))
-            for pid in self.stress_pids[1:]:
-                roster.append(("stress-ng-cpu", pid, self.stress_pids[0], "", "/usr/bin/stress-ng", "root", "stress", 6e6))
+            roster.append(("nightly_backup.sh", self.stress_pids[0], 1, "/bin/bash /opt/backup/nightly_backup.sh", "/opt/backup/nightly_backup.sh", "root", 0.0, 4e6))
+            roster.append(("tar", self.stress_pids[1], self.stress_pids[0], "tar -cf - /var/lib/redis /var/log", "/usr/bin/tar", "root", "stress", 6e6))
+            roster.append(("gzip", self.stress_pids[2], self.stress_pids[0], "gzip -9", "/usr/bin/gzip", "root", "stress", 3e6))
         for name, pid, ppid, cmd, path, owner, cpu_share, mem in roster:
             st = self.pstate.setdefault(pid, {"start": t, "user": 0.0, "system": 0.0, "wait": 0.0, "rd": 0.0, "wr": 0.0, "rdo": 0.0, "wro": 0.0})
             if cpu_share == "stress":

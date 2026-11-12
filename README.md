@@ -37,7 +37,7 @@ python3 cpu_load.py stop [redis|app|all]        # 30 秒かけて平常値に戻
 python3 cpu_load.py status
 ```
 
-反映は次のバッチ(最大 `--interval` 秒 + 1 秒)から。以降のデータで CPU・負荷平均・`stress-ng` プロセス/ログが現れ、Redis CPU に応じてアプリのレイテンシも上がります。
+反映は次のバッチ(最大 `--interval` 秒 + 1 秒)から。以降のデータで CPU・負荷平均・バックアップ暴走(`nightly_backup.sh` / `tar` / `gzip`)のプロセス/ログが現れ、Redis CPU に応じてアプリのレイテンシも上がります。
 `control.json` に書かれ、`generate.py` 起動時にリセットされます。履歴部分の自動シナリオ(下記 `scenario.json` の `cpu_load`)が不要なら空配列 `[]` にしてください。
 
 ## CPU 負荷シナリオの設定(履歴部分)
@@ -64,10 +64,10 @@ python3 generate.py --load redis:40:60:70:30 --load app:10:20:40
 |---|---|
 | `traces-generic.otel-default` | フロント(webjs) → `GET /api/status`(Tomcat) → `StatusController.runRedisSet` → Redis `SETEX`、および `PING` |
 | `logs-generic.otel-default` | アプリログ(起動ログ、`API Hit`)、フロントの navigation timing イベント |
-| `metrics-hostmetricsreceiver.otel-default` | 2VM の cpu/load/memory/disk/filesystem/network/processes とプロセス別メトリクス(負荷中は `stress-ng` も出現) |
+| `metrics-hostmetricsreceiver.otel-default` | 2VM の cpu/load/memory/disk/filesystem/network/processes とプロセス別メトリクス(負荷中は `nightly_backup.sh`/`tar`/`gzip` も出現) |
 | `metrics-generic.otel-default` | JVM / OTel SDK / `http.server.request.duration` / `db.client.operation.duration` |
 | `metrics-{transaction,service_transaction,service_summary,service_destination}.{1m,10m,60m}.otel-default` | APM 集計メトリクス(レイテンシ・スループット) |
-| `logs-system.syslog-default` / `logs-system.auth-default` | Filebeat 形式の syslog / auth(アプリの JSON ログ、`stress-ng` 開始/終了ログを含む) |
+| `logs-system.syslog-default` / `logs-system.auth-default` | Filebeat 形式の syslog / auth(アプリの JSON ログ、バックアップ開始/終了ログを含む) |
 
 ホスト名は `sample-otel-demo-app` / `sample-otel-demo-redis`、サービス名は `test-card-service` / `java-status-api-frontend-aws`。
 
