@@ -77,6 +77,8 @@ class ApprovalRequest(BaseModel):
     request_id: str = ""
     description: str = "Remediate high CPU utilization"
     action: str = "python3 cpu_load.py stop"
+    rca_result: str = ""  # investigate_root_cause step output
+    infra_check: str = ""  # check_infra step output
 
 
 class ApprovalDecision(BaseModel):
@@ -109,6 +111,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 16px
 th{font-size:12px;color:#7b8794;text-transform:uppercase;font-weight:600}
 .pill{padding:2px 9px;border-radius:10px;font-size:12px;color:#fff}
 .p1{background:#c0392b}.p2{background:#e67e22}.p3{background:#d4ac0d}.ok{background:#2e8b57}
+.rca{white-space:pre-wrap;word-break:break-word;margin:0;padding:14px 16px;font:13px/1.6 inherit;max-height:420px;overflow:auto}
 .form{padding:16px}.form dl{display:grid;grid-template-columns:170px 1fr;gap:10px 14px;margin:0 0 18px}
 .form dt{color:#7b8794}.form dd{margin:0}
 .btn{border:1px solid #1d5d4b;background:#fff;color:#1d5d4b;padding:8px 22px;border-radius:3px;font-size:14px;cursor:pointer;margin-right:10px}
@@ -166,6 +169,10 @@ async def approval(execution_id: str = ""):
         return page("Approval", "<h1>Approval Request</h1><div class=\"panel\"><h3>No pending approvals</h3>"
                     "<div class=\"form\">There are no approval requests waiting.</div></div>", "approval")
     service_name, request_id, execution_id = item["service_name"], item["request_id"], item["execution_id"]
+    analysis_panels = ""
+    for key, label in (("rca_result", "Root Cause Analysis (RCA)"), ("infra_check", "Infrastructure Check")):
+        if item.get(key):
+            analysis_panels += f'<div class="panel"><h3>{label}</h3><pre class="rca">{escape(item[key])}</pre></div>'
     body = f"""<h1>Approval Request</h1>
 <div class="panel"><h3>{escape(request_id)}</h3><div class="form">
 <dl><dt>Request</dt><dd>{escape(request_id)}</dd>
@@ -176,6 +183,7 @@ async def approval(execution_id: str = ""):
 <button class="btn primary" id="approve">Approve</button>
 <button class="btn danger" id="reject">Reject</button>
 <div id="result"></div></div></div>
+{analysis_panels}
 <script>
 const payload = d => ({{decision: d, service_name: {json.dumps(service_name)}, request_id: {json.dumps(request_id)}, execution_id: {json.dumps(execution_id)}}});
 async function send(d) {{

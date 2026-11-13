@@ -29,7 +29,7 @@ steps:
 
   - name: investigate_root_cause
     type: ai.agent
-    agent-id: elastic-ai-agent
+    agent-id: rca_agent
     with:
       message: |
         以下のアラート情報とインフラチェックの結果をもとに、根本原因分析（root cause analysis）を行ってください。
@@ -100,6 +100,8 @@ steps:
         service_name: "{{ steps.search_past_incidents.output.hits.hits[0]._source.service_name }}"
         description: "過去事例 {{ steps.search_past_incidents.output.hits.hits[0]._source.incident_id }} と同一事象のため修復を実行: {{ steps.search_past_incidents.output.hits.hits[0]._source.title }}"
         action: "{{ steps.search_past_incidents.output.hits.hits[0]._source.remediation_command }}"
+        rca_result: "{{ steps.investigate_root_cause.output.message }}"
+        infra_check: "{{ steps.check_infra.output.message }}"
 
   # 2. server.py から /approval の結果で再開されるまで待機
   - name: approval
