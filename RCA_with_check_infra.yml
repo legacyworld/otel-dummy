@@ -1,4 +1,4 @@
-name: Alert Infra Check and Root Cause Investigation (with check_infra)
+name: Alert Infra Check and Root Cause Investigation
 
 triggers:
   - type: alert
@@ -7,12 +7,13 @@ steps:
   # アラート直後: check_infra エージェントで、対象サービスと関連モジュールが動いているインフラを特定する
   - name: check_infra
     type: ai.agent
+    agent-id: check_infra
     with:
-      agent-id: check_infra
       message: |
         以下のアラートの対象サービスと、その関連モジュール(依存先・呼び出し元のDB/キャッシュ/他サービス)が
-        どのインフラ(ホスト、クラウドプロバイダ、IP、OS、基本的なヘルスメトリクス)上で動作しているかを調べてください。
-        原因の診断は不要です。サービス/モジュール → ホスト → インフラ情報 の対応を簡潔にまとめてください。
+        どのホスト上で動作しているかを調べ、各ホストの24時間平均(ベースライン)と、
+        アラート発生時刻前後10分の1分バケットのメトリクスのみを、スキルの出力形式どおりに出力してください。
+        前置き・説明・原因の診断は不要です。
 
         === アラート情報 ===
         - ルール名: {{ event.rule.name }}
@@ -28,6 +29,7 @@ steps:
 
   - name: investigate_root_cause
     type: ai.agent
+    agent-id: elastic-ai-agent
     with:
       message: |
         以下のアラート情報とインフラチェックの結果をもとに、根本原因分析（root cause analysis）を行ってください。
