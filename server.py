@@ -75,8 +75,8 @@ class ApprovalRequest(BaseModel):
     execution_id: str
     service_name: str = "unknown"
     request_id: str = ""
-    description: str = "Remediate high CPU utilization"
-    action: str = "python3 cpu_load.py stop"
+    description: str = "Stop runaway backup processes (nightly_backup.sh / tar / gzip) causing high CPU"
+    action: str = "pkill -f nightly_backup.sh; pkill -x tar; pkill -x gzip"  # backup processes on the Redis host
     rca_result: str = ""  # investigate_root_cause step output
     infra_check: str = ""  # check_infra step output
 
@@ -277,11 +277,11 @@ async def remediate_service(req: ServiceRequest):
             "status": "remediation_triggered",
             "remediation_id": f"rem-{process.pid}",
             "service": service_name,
-            "action": "stop_cpu_load",
-            "command": "python3 cpu_load.py stop",
+            "action": "kill_backup_processes",
+            "command": "pkill -f nightly_backup.sh; pkill -x tar; pkill -x gzip",
             "pid": process.pid,
             "timestamp": timestamp,
-            "message": f"CPU load simulation stopped for {service_name}"
+            "message": f"Backup processes (nightly_backup.sh / tar / gzip) stopped for {service_name}"
         }
 
     except Exception as e:
