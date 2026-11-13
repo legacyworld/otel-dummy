@@ -97,7 +97,7 @@ PAYLOAD=$(cat <<'JSON'
       "group": "query matched",
       "params": {
         "subActionParams": {
-          "workflowId": "alert-infra-check-and-root-cause-investigation-with-check-infra",
+          "workflowId": "alert-infra-check-and-root-cause-investigation",
           "summaryMode": true,
           "alertStates": {
             "new": true,
