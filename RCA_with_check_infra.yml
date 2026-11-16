@@ -27,6 +27,25 @@ steps:
            Kibana Alert: {{ alert.kibana.alert | json }}
         {%- endfor -%}
 
+  # check_infra が特定したホストについて、アラート近辺のログ全体から窓内に集中して出た発生元を洗い出し、
+  # そのログ(起動・終了など)とメトリクスで何が動いていたかを裏付ける
+  - name: check_process_log
+    type: ai.agent
+    agent-id: check_process_log
+    with:
+      message: |
+        以下のインフラ情報に含まれるホストについて、アラート発生時刻 T の近辺のログ全体から、
+        その時間帯に集中して出ていた発生元(ジョブ・プロセス)を洗い出し、ログとメトリクスで裏付けた結果を、
+        指示の出力形式どおりに出力してください。CPU が高いかどうかで絞り込まないでください。
+
+        === インフラ情報 (check_infra の結果) ===
+        {{ steps.check_infra.output.message }}
+
+        === アラート発生時刻 T ===
+        {%- for alert in event.alerts %}
+        {{ alert['@timestamp'] }}
+        {%- endfor %}
+
   - name: investigate_root_cause
     type: ai.agent
     agent-id: rca_agent
@@ -37,6 +56,9 @@ steps:
 
         === インフラ情報 (check_infra の結果) ===
         {{ steps.check_infra.output.message }}
+
+        === アラート近辺のログ棚卸しとメトリクスの裏付け (check_process_log の結果) ===
+        {{ steps.check_process_log.output.message }}
 
         === アラート情報 ===
         - ルール名: {{ event.rule.name }}

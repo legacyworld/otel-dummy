@@ -20,8 +20,8 @@ fi
 : "${ELASTICSEARCH_AUTH_BASE64:?ELASTICSEARCH_AUTH_BASE64 is not set (${ENV_FILE})}"
 AUTH_SCHEME="${ELASTICSEARCH_AUTH_SCHEME:-Basic}"
 AUTH_BASE64=$(printf '%s' "${ELASTICSEARCH_AUTH_BASE64}" | tr -d '\r\n')
-SKILL_ID="${SKILL_ID:-service-infra-lookup}"
-AGENT_ID="${AGENT_ID:-check_infra}"
+SKILL_ID="${SKILL_ID:-rca-lite}"
+AGENT_ID="${AGENT_ID:-rca_agent}"
 export SKILL_ID AGENT_ID
 BASE="${KIBANA_URL%/}/api/agent_builder"
 

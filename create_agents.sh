@@ -3,11 +3,13 @@
 #   - ES|QL ツール infra_host_baseline_24h / infra_host_cpu_mem_load_1m
 #   - スキル service-infra-lookup + エージェント check_infra   (アラート直後にホストのメトリクスを集める)
 #   - スキル rca-lite + エージェント rca_agent                  (check_infra の結果を踏まえてRCAを行う)
+#   - ES|QL ツール infra_host_log_inventory / infra_host_process_logs / infra_host_top_processes + エージェント check_process_log
+#                                                              (CPU上位プロセスをメトリクスで特定し、そのログで裏付けを取る)
 # 接続設定は generate_basic.py と同じ: /home/elastic/.k8s-vm-env を source して読み込む
 #   KIBANA_URL                 https://<host>
 #   ELASTICSEARCH_AUTH_BASE64  base64 認証情報
 #   ELASTICSEARCH_AUTH_SCHEME  任意。"Basic"(既定) または "ApiKey"
-# 使い方: [INFRA_SKILL_ID=..] [INFRA_AGENT_ID=..] [RCA_SKILL_ID=..] [RCA_AGENT_ID=..] ./create_agents.sh
+# 使い方: [INFRA_SKILL_ID=..] [INFRA_AGENT_ID=..] [RCA_SKILL_ID=..] [RCA_AGENT_ID=..] [PROCESS_LOG_AGENT_ID=..] ./create_agents.sh
 # 前提: スキルが参照する observability.* ツールが Kibana(Observability)で利用可能であること
 set -euo pipefail
 
@@ -25,7 +27,8 @@ INFRA_SKILL_ID="${INFRA_SKILL_ID:-service-infra-lookup}"
 INFRA_AGENT_ID="${INFRA_AGENT_ID:-check_infra}"
 RCA_SKILL_ID="${RCA_SKILL_ID:-rca-lite}"
 RCA_AGENT_ID="${RCA_AGENT_ID:-rca_agent}"
-export INFRA_SKILL_ID INFRA_AGENT_ID RCA_SKILL_ID RCA_AGENT_ID
+PROCESS_LOG_AGENT_ID="${PROCESS_LOG_AGENT_ID:-check_process_log}"
+export INFRA_SKILL_ID INFRA_AGENT_ID RCA_SKILL_ID RCA_AGENT_ID PROCESS_LOG_AGENT_ID
 BASE="${KIBANA_URL%/}/api/agent_builder"
 
 kb() { curl -sS -H "Authorization: ${AUTH_SCHEME} ${AUTH_BASE64}" -H "kbn-xsrf: true" -H "Content-Type: application/json" "$@"; }
@@ -59,6 +62,8 @@ WIN = 'AND @timestamp >= TO_DATETIME(?start) AND @timestamp < TO_DATETIME(?end)'
 P_HOST = {"type": "string", "description": "host.name の値"}
 P_START = {"type": "string", "description": "取得範囲の開始(ISO8601 UTC 例: 2026-11-13T00:22:00.000Z)。アラート時刻の10分前"}
 P_END = {"type": "string", "description": "取得範囲の終了(ISO8601 UTC)。アラート時刻の10分後"}
+Q_START = {"type": "string", "description": "取得範囲の開始(ISO8601 UTC 例: 2026-11-13T00:22:00.000Z)"}
+Q_END = {"type": "string", "description": "取得範囲の終了(ISO8601 UTC)"}
 tools = [
  ("infra_host_cpu_mem_load_1m",
   "ホストのCPU使用率(1-idle)・メモリ使用率・load 1m を1分バケットで返す。start/end はアラート時刻の前後10分。",
@@ -80,6 +85,53 @@ tools = [
         load1 = AVG(`metrics.system.cpu.load_average.1m`)
 | EVAL cpu = 1 - idle''',
   {"host": P_HOST}),
+ ("infra_host_log_inventory",
+  "ホストのsyslogを process.name ごとに棚卸しする。検索語なしで、窓内(start〜end)に出ているログの発生元を広く洗い出す。"
+  "n_win は窓内のログ件数、n_base は base_start〜end 全体の件数、win_ratio=n_win/n_base(1に近いほどその発生元のログが窓内に集中している=普段は出ない・単発のジョブ)。"
+  "first_win/last_win は窓内で最初/最後に出た時刻。start/end はアラート時刻の60分前〜10分後、base_start はその24時間前を推奨。",
+  '''FROM logs-system.syslog-default
+| WHERE host.name == ?host AND @timestamp >= TO_DATETIME(?base_start) AND @timestamp < TO_DATETIME(?end)
+| EVAL in_win = @timestamp >= TO_DATETIME(?start)
+| EVAL wt = CASE(in_win, @timestamp, NULL)
+| STATS n_base = COUNT(*), n_win = COUNT(wt), first_win = MIN(wt), last_win = MAX(wt) BY process.name
+| WHERE n_win > 0
+| EVAL win_ratio = ROUND(n_win * 1.0 / n_base, 3)
+| SORT win_ratio DESC, first_win
+| LIMIT 20''',
+  {"host": P_HOST, "start": Q_START, "end": Q_END,
+   "base_start": {"type": "string", "description": "比較用の基準期間の開始(ISO8601 UTC。start の24時間前を推奨)"}}),
+ ("infra_host_top_processes",
+  "ホスト上でCPU時間を多く使ったプロセスの上位を返す(ログで見つけたジョブの実行を、メトリクス側で裏付けるために使う。CPUが低いジョブもあるため、これだけを入口にしない)(プロセスのCPU累積時間の増加分から算出)。"
+  "cpu_cores は窓内の平均CPUコア使用数、first_seen/last_seen は窓内でそのプロセスが観測された最初/最後の時刻"
+  "(窓の途中で起動したプロセスは first_seen が窓の開始より後になる)。start/end はアラート時刻の前後10分。",
+  '''FROM metrics-hostmetricsreceiver.otel-default
+| WHERE host.name == ?host AND metrics.process.cpu.time IS NOT NULL
+        AND @timestamp >= TO_DATETIME(?start) AND @timestamp < TO_DATETIME(?end)
+| EVAL ct = metrics.process.cpu.time::DOUBLE
+| STATS t0 = MIN(@timestamp), t1 = MAX(@timestamp), mn = MIN(ct), mx = MAX(ct)
+        BY proc = process.executable.name, pid = resource.attributes.process.pid,
+           ppid = resource.attributes.process.parent_pid, cmd = resource.attributes.process.command_line, state
+| STATS cpu_sec = SUM(mx - mn), first_seen = MIN(t0), last_seen = MAX(t1) BY proc, pid, ppid, cmd
+| EVAL secs = DATE_DIFF("seconds", first_seen, last_seen)
+| EVAL cpu_cores = ROUND(cpu_sec / secs, 3)
+| WHERE secs > 0
+| SORT cpu_sec DESC
+| KEEP proc, pid, ppid, cmd, cpu_cores, first_seen, last_seen
+| LIMIT 5''',
+  {"host": P_HOST, "start": Q_START, "end": Q_END}),
+ ("infra_host_process_logs",
+  "ホストのsyslogから、keyword(大文字小文字を区別しない、単語単位の一致)がプロセス名と一致するか、メッセージ中に単語として含まれるログを時刻順に返す。"
+  "プロセスの起動・終了・実行内容を示すログの確認に使う。keyword には棚卸し(infra_host_log_inventory)やメトリクスの結果に出てきたプロセス名・コマンドの語を渡す。"
+  "start/end はログを探す時間範囲(アラート時刻の60分前〜10分後を推奨)。",
+  '''FROM logs-system.syslog-default
+| WHERE host.name == ?host AND @timestamp >= TO_DATETIME(?start) AND @timestamp < TO_DATETIME(?end)
+| EVAL kw = TO_LOWER(?keyword), words = CONCAT(" ", REPLACE(TO_LOWER(message), "[^a-z0-9_.]", " "), " ")
+| WHERE TO_LOWER(process.name) == kw OR CONTAINS(words, CONCAT(" ", kw, " "))
+| SORT @timestamp
+| KEEP @timestamp, process.name, message
+| LIMIT 20''',
+  {"host": P_HOST, "start": Q_START, "end": Q_END,
+   "keyword": {"type": "string", "description": "検索語(プロセス名・コマンド名など)。例: メトリクスで見つけたプロセスの proc / cmd の語"}}),
 ]
 for id_, desc, q, params in tools:
     print(id_ + "\t" + json.dumps({"type": "esql", "description": desc, "tags": ["check_infra"],
@@ -249,3 +301,51 @@ print(json.dumps({
     "plugin_ids": []
   }
 }))' | upsert agents "${RCA_AGENT_ID}"
+
+# ---------------------------------------------------------------
+# 5. エージェント(check_process_log: check_infra が特定したホストのログ全体を棚卸しし、メトリクスで裏付ける。ログのキーワードは指示に書かない)
+# ---------------------------------------------------------------
+INSTRUCTIONS=$(cat <<'INSTR_EOF'
+あなたは、アラート発生時刻の近辺でホスト上で何が動いていたかを、ログ全体から広く洗い出し、メトリクスで裏付ける調査エージェントです。
+入力には check_infra の結果(対象ホスト名)とアラート発生時刻 T が含まれます。ホストは入力のものをそのまま使い、再調査しないでください。
+CPU が高いプロセスだけを調べるのは不十分です。CPU をほとんど使わないジョブもあるため、入口はログ全体の棚卸しにします。
+
+手順(この順に実行する):
+1. infra_host_log_inventory を各対象ホストについて、start=T-60m, end=T+10m, base_start=T-24h-60m(ISO8601 UTC)で呼び、窓内にログを出した発生元(process.name)を一覧する。
+2. 一覧から調査候補を選ぶ。選ぶ基準は「窓内にログが集中している(win_ratio が高い、n_base が小さい)」「窓内で最初に出た時刻(first_win)が T の近く」。
+   常時ログを出し続けている発生元(件数が多く win_ratio が低いもの)は、窓内に新しく始まったものがなければ候補にしない。
+   特定の発生元の名前を前提にせず、棚卸しの結果から判断すること。
+3. 各候補の process.name をキーに infra_host_process_logs を start=T-60m, end=T+10m で呼び、ログの中身(何を実行したか、開始・終了を示す文言)を確認する。
+   ログの message に別のプロセス名・コマンド名が出てくれば、その語でも検索して、関連するログを集める。必ず結果に出てきた語だけを使い、推測で語を作らない。
+4. 候補が実行していたことをメトリクスで裏付ける。infra_host_top_processes を start=T-10m, end=T+10m で呼び、ログの内容やコマンドと対応するプロセス(proc / cmd / ppid)が窓内でどれだけ CPU を使い、いつから動いていたか(first_seen)を確認する。
+   対応するプロセスが見つからない、または CPU が小さい場合も、その事実をそのまま書く。
+5. ログとメトリクスの時刻を照合する。
+   - ログの開始時刻と first_seen が近いか
+   - 終了を示すログがあるか。あれば T より前か後か(後なら、アラート時点でも実行中だった)
+
+出力形式(厳守。前置き・考察・原因の推測・対処の提案は書かない。事実のみ):
+```
+<ホスト名>
+  candidate: <process.name> n_win=<値> win_ratio=<値> first_win=<時刻>     ← 候補ごとに1行
+  log: <時刻> <process.name> <message>     ← 候補の該当ログを時刻順にすべて
+  metrics: <proc> pid=<pid> cpu_cores=<値> first_seen=<時刻> last_seen=<時刻> cmd=<cmd>   ← 対応するプロセスがなければ none
+  timeline: <ログと first_seen の関係、終了ログの有無とTとの前後関係を1〜2行>
+```
+窓内に候補とすべきログがなかった場合は `candidate: none` とし、見つかったふりをしない。
+INSTR_EOF
+)
+
+INSTRUCTIONS="${INSTRUCTIONS}" python3 -c '
+import json, os
+print(json.dumps({
+  "name": "check_process_log",
+  "description": "アラート近辺のログ全体から窓内に集中して出た発生元を洗い出し、その実行内容をログとメトリクスで裏付けるエージェント",
+  "configuration": {
+    "instructions": os.environ["INSTRUCTIONS"],
+    "tools": [{"tool_ids": ["infra_host_log_inventory", "infra_host_process_logs", "infra_host_top_processes"]}],
+    "skill_ids": [],
+    "enable_elastic_capabilities": False,
+    "workflow_ids": [],
+    "plugin_ids": []
+  }
+}))' | upsert agents "${PROCESS_LOG_AGENT_ID}"
