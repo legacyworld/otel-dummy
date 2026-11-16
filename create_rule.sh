@@ -83,7 +83,7 @@ HEADERS=(
 
 PAYLOAD=$(cat <<'JSON'
 {
-  "name": "Elasticsearch query rule",
+  "name": "Service latency change detection",
   "rule_type_id": ".es-query",
   "consumer": "alerts",
   "enabled": false,
@@ -117,10 +117,10 @@ PAYLOAD=$(cat <<'JSON'
     "thresholdComparator": ">",
     "size": 100,
     "esqlQuery": {
-      "esql": "FROM traces-generic.otel-default\n| WHERE service.name == \"test-card-service\" AND processor.event == \"transaction\" AND @timestamp > NOW() - 1h\n| STATS avg_duration = AVG(transaction.duration.us) BY bucket = BUCKET(@timestamp, 1 minute)\n| CHANGE_POINT avg_duration ON bucket\n| WHERE type IS NOT NULL\n| KEEP bucket, avg_duration, type, pvalue"
+      "esql": "FROM traces-generic.otel-default\n| WHERE service.name IS NOT NULL AND processor.event == \"transaction\" AND @timestamp > NOW() - 1h\n| STATS avg_duration = AVG(transaction.duration.us) BY service.name, bucket = BUCKET(@timestamp, 1 minute)\n| CHANGE_POINT avg_duration ON bucket BY service.name\n| WHERE type IS NOT NULL\n| KEEP service.name, bucket, avg_duration, type, pvalue"
     },
     "aggType": "count",
-    "groupBy": "all",
+    "groupBy": "row",
     "termSize": 5,
     "sourceFields": [],
     "timeField": "@timestamp",
