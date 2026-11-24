@@ -89,7 +89,7 @@ PAYLOAD=$(cat <<'JSON'
   "enabled": false,
   "tags": [],
   "schedule": {
-    "interval": "1h"
+    "interval": "2h"
   },
   "actions": [
     {
